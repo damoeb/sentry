@@ -9,7 +9,7 @@ from django.utils import timezone
 from six.moves import reduce
 
 from sentry.constants import STATUS_CHOICES
-from sentry.models import EventUser, User
+from sentry.models import EventUser, Project, User
 from sentry.search.base import ANY
 from sentry.utils.auth import find_users
 
@@ -19,12 +19,18 @@ class InvalidQuery(Exception):
 
 
 def get_user_tag(project, key, value):
+    if isinstance(project, Project):
+        project_key = 'project'
+        project_value = project
+    else:
+        project_key = 'project_id__in'
+        project_value = [p.id for p in project]
+
     # TODO(dcramer): do something with case of multiple matches
     try:
         lookup = EventUser.attr_from_keyword(key)
         euser = EventUser.objects.filter(
-            project=project,
-            **{lookup: value}
+            **{lookup: value, project_key: project_value}
         )[0]
     except (KeyError, IndexError):
         return '{}:{}'.format(key, value)

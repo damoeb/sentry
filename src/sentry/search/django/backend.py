@@ -23,7 +23,7 @@ from sentry.utils.db import get_db_engine
 
 
 class DjangoSearchBackend(SearchBackend):
-    def _tags_to_filter(self, project, tags):
+    def _tags_to_filter(self, project_ids, tags):
         # Django doesnt support union, so we limit results and try to find
         # reasonable matches
         from sentry.models import GroupTagValue
@@ -42,12 +42,12 @@ class DjangoSearchBackend(SearchBackend):
                 base_qs = GroupTagValue.objects.filter(
                     key=k,
                     value=v,
-                    project=project,
+                    project_id__in=project_ids,
                 )
             else:
                 base_qs = GroupTagValue.objects.filter(
                     key=k,
-                    project=project,
+                    project_id__in=project_ids,
                 ).distinct()
 
             if matches:
@@ -66,11 +66,16 @@ class DjangoSearchBackend(SearchBackend):
               date_from=None, date_from_inclusive=True,
               date_to=None, date_to_inclusive=True,
               cursor=None, limit=100):
-        from sentry.models import Event, Group, GroupStatus
+        from sentry.models import Event, Group, GroupStatus, Project
 
         engine = get_db_engine('default')
 
-        queryset = Group.objects.filter(project=project)
+        if isinstance(project, Project):
+            project_ids = [project.id]
+        else:
+            project_ids = [p.id for p in project]
+
+        queryset = Group.objects.filter(project_id__in=project_ids)
         if query:
             # TODO(dcramer): if we want to continue to support search on SQL
             # we should at least optimize this in Postgres so that it does
@@ -94,13 +99,13 @@ class DjangoSearchBackend(SearchBackend):
 
         if bookmarked_by:
             queryset = queryset.filter(
-                bookmark_set__project=project,
+                bookmark_set__project_id__in=project_ids,
                 bookmark_set__user=bookmarked_by,
             )
 
         if assigned_to:
             queryset = queryset.filter(
-                assignee_set__project=project,
+                assignee_set__project_id__in=project_ids,
                 assignee_set__user=assigned_to,
             )
         elif unassigned in (True, False):
@@ -110,12 +115,12 @@ class DjangoSearchBackend(SearchBackend):
 
         if first_release:
             queryset = queryset.filter(
-                first_release__project=project,
+                first_release__project_id__in=project_ids,
                 first_release__version=first_release,
             )
 
         if tags:
-            matches = self._tags_to_filter(project, tags)
+            matches = self._tags_to_filter(project_ids, tags)
             if matches:
                 queryset = queryset.filter(
                     id__in=matches,
@@ -139,7 +144,7 @@ class DjangoSearchBackend(SearchBackend):
 
         if date_from or date_to:
             params = {
-                'project_id': project.id,
+                'project_id__in': project_ids,
             }
             if date_from:
                 if date_from_inclusive:

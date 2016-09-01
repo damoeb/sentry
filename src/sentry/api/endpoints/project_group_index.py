@@ -17,7 +17,7 @@ from sentry.constants import DEFAULT_SORT_OPTION
 from sentry.db.models.query import create_or_update
 from sentry.models import (
     Activity, EventMapping, Group, GroupBookmark, GroupResolution, GroupSeen,
-    GroupSubscription, GroupSubscriptionReason, GroupSnooze, GroupStatus,
+    GroupSubscription, GroupSubscriptionReason, GroupSnooze, GroupStatus, Project,
     Release, TagKey
 )
 from sentry.models.group import looks_like_short_id
@@ -87,58 +87,61 @@ class GroupSerializer(serializers.Serializer):
     snoozeDuration = serializers.IntegerField()
 
 
+def build_query_params_from_request(request, project):
+    query_kwargs = {
+        'project': project,
+    }
+
+    if request.GET.get('status'):
+        try:
+            query_kwargs['status'] = STATUS_CHOICES[request.GET['status']]
+        except KeyError:
+            raise ValidationError('invalid status')
+
+    if request.user.is_authenticated() and request.GET.get('bookmarks'):
+        query_kwargs['bookmarked_by'] = request.user
+
+    if request.user.is_authenticated() and request.GET.get('assigned'):
+        query_kwargs['assigned_to'] = request.user
+
+    sort_by = request.GET.get('sort')
+    if sort_by is None:
+        sort_by = DEFAULT_SORT_OPTION
+
+    query_kwargs['sort_by'] = sort_by
+
+    tags = {}
+    projects = [project] if isinstance(project, Project) else project
+    for p in projects:
+        for tag_key in TagKey.objects.all_keys(p):
+            if request.GET.get(tag_key):
+                tags[tag_key] = request.GET[tag_key]
+    if tags:
+        query_kwargs['tags'] = tags
+
+    limit = request.GET.get('limit')
+    if limit:
+        try:
+            query_kwargs['limit'] = int(limit)
+        except ValueError:
+            raise ValidationError('invalid limit')
+
+    # TODO: proper pagination support
+    cursor = request.GET.get('cursor')
+    if cursor:
+        query_kwargs['cursor'] = Cursor.from_string(cursor)
+
+    query = request.GET.get('query', 'is:unresolved').strip()
+    if query:
+        query_kwargs.update(parse_query(project, query, request.user))
+
+    return query_kwargs
+
+
 class ProjectGroupIndexEndpoint(ProjectEndpoint):
     doc_section = DocSection.EVENTS
 
     permission_classes = (ProjectEventPermission,)
-
-    def _build_query_params_from_request(self, request, project):
-        query_kwargs = {
-            'project': project,
-        }
-
-        if request.GET.get('status'):
-            try:
-                query_kwargs['status'] = STATUS_CHOICES[request.GET['status']]
-            except KeyError:
-                raise ValidationError('invalid status')
-
-        if request.user.is_authenticated() and request.GET.get('bookmarks'):
-            query_kwargs['bookmarked_by'] = request.user
-
-        if request.user.is_authenticated() and request.GET.get('assigned'):
-            query_kwargs['assigned_to'] = request.user
-
-        sort_by = request.GET.get('sort')
-        if sort_by is None:
-            sort_by = DEFAULT_SORT_OPTION
-
-        query_kwargs['sort_by'] = sort_by
-
-        tags = {}
-        for tag_key in TagKey.objects.all_keys(project):
-            if request.GET.get(tag_key):
-                tags[tag_key] = request.GET[tag_key]
-        if tags:
-            query_kwargs['tags'] = tags
-
-        limit = request.GET.get('limit')
-        if limit:
-            try:
-                query_kwargs['limit'] = int(limit)
-            except ValueError:
-                raise ValidationError('invalid limit')
-
-        # TODO: proper pagination support
-        cursor = request.GET.get('cursor')
-        if cursor:
-            query_kwargs['cursor'] = Cursor.from_string(cursor)
-
-        query = request.GET.get('query', 'is:unresolved').strip()
-        if query:
-            query_kwargs.update(parse_query(project, query, request.user))
-
-        return query_kwargs
 
     # bookmarks=0/1
     # status=<x>
@@ -224,7 +227,7 @@ class ProjectGroupIndexEndpoint(ProjectEndpoint):
                 return response
 
         try:
-            query_kwargs = self._build_query_params_from_request(request, project)
+            query_kwargs = build_query_params_from_request(request, project)
         except ValidationError as exc:
             return Response({'detail': six.text_type(exc)}, status=400)
 
@@ -322,7 +325,7 @@ class ProjectGroupIndexEndpoint(ProjectEndpoint):
 
         if not group_ids:
             try:
-                query_kwargs = self._build_query_params_from_request(request, project)
+                query_kwargs = build_query_params_from_request(request, project)
             except ValidationError as exc:
                 return Response({'detail': six.text_type(exc)}, status=400)
 
